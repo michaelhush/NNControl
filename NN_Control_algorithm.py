@@ -112,15 +112,14 @@ class LSTM_controller(object):
     def config_pend(self, g=9.8, mu=0.1):
         self.g = g #pendumlem weight
         self.mu = mu #pendulem dampening
-        self.init_state = np.array([0.0,0.0])
         self.t_arr = np.array([0.0,self.timestep])
-        self.outvar_names = ["position","momentum"]
+        self.outvar_names = ["pos x","pos y","ang mom"]
         
-    def config_noise(self, nF = 1):
+    def config_noise(self, nF = 5):
         self.nF = nF #magnitude of noise 
     
     ## change this to a single layer lstm
-    def config_lstm(self, batch_size = 16, plant_state_size = 32, cont_state_size = 32, input_size = 1, output_size = 2, learning_rate = 0.001, setout=None):
+    def config_lstm(self, batch_size = 128, plant_state_size = 128, cont_state_size = 32, input_size = 1, output_size = 3, learning_rate = 0.001, setout=None):
         self.batch_size = batch_size
         self.plant_state_size = plant_state_size
         self.cont_state_size = cont_state_size
@@ -190,12 +189,16 @@ class LSTM_controller(object):
         return [dx,dp]
     
     def real_state_to_response(self, real_state):
-        return real_state
+        return np.array([np.sin(real_state[0]),-np.cos(real_state[0]),real_state[1]])
     
     def gen_noise(self):
-        temp = np.random.normal(0, self.nF* math.sqrt(self.num_steps))
+        temp = np.random.normal(0, self.nF)
         return np.full([self.num_steps, self.plant_input_size], temp)
         # return self.nF*np.random.randn([self.num_steps, self.plant_input_size])
+    
+    def gen_init_state(self):
+        return np.array([0.0, 0.0])
+        #return np.array([np.random.uniform()* 2*np.pi, np.random.normal(0, 1.0)])
     
     def initialize_variables(self):
         self.sess.run(tf.global_variables_initializer())
@@ -255,7 +258,7 @@ class LSTM_controller(object):
             curr_force = np.zeros([self.num_steps, self.plant_input_size])
             curr_resp = np.zeros([self.num_steps, self.plant_output_size])
             
-            curr_pstate = self.init_state
+            curr_pstate = self.gen_init_state()
             curr_cstate = self.zeros_one_cont_state
             curr_hstate = self.zeros_one_cont_state
             cont_out = 0.0
@@ -345,15 +348,19 @@ class LSTM_controller(object):
         plt.title('Controller cost history')
         plt.legend()      
         
-    def plot_plant_dynamics(self, noise=None):
+    def plot_plant_dynamics(self, noise=None, init_state=None):
 
         if noise is None:
-            curr_noise = np.array(self.gen_noise())
+            curr_noise = self.gen_noise()
         else:
             curr_noise = noise
-            
+        if init_state is None:
+            curr_pstate = self.gen_init_state()
+        else:
+            curr_pstate = init_state
+        
+        
         real_resp = np.zeros([self.num_steps, self.plant_output_size])
-        curr_pstate = self.init_state
         for time in range(self.num_steps):
             curr_u = curr_noise[time]
             oderes = si.odeint(self.damped_pen,curr_pstate,self.t_arr,args=(curr_u,))
@@ -372,18 +379,23 @@ class LSTM_controller(object):
         for ind in range(self.plant_output_size):
             plt.plot(plot_time, pred_resp[:,ind], '-', label = 'uncon pred ' + self.outvar_names[ind])
             plt.plot(plot_time, real_resp[:,ind], '-', label = 'uncon real ' + self.outvar_names[ind])
+        plt.plot(plot_time, curr_noise, '-', label = 'input noise')
         plt.title('Uncontrolled plant response (Real vs Predicted)')
         plt.legend()
 
-    def plot_cont_plant_dynamics(self,noise=None):  
+    def plot_cont_plant_dynamics(self,noise=None, init_state=None):  
         
         if noise is None:
-            curr_noise = np.array(self.gen_noise())
+            curr_noise = self.gen_noise()
         else:
             curr_noise = noise
+        if init_state is None:
+            curr_pstate = self.gen_init_state()
+        else:
+            curr_pstate = init_state
         
         real_resp = np.zeros([self.num_steps, self.plant_output_size])
-        curr_pstate = self.init_state
+        curr_pstate = self.gen_init_state()
         curr_cstate = self.zeros_one_cont_state
         curr_hstate = self.zeros_one_cont_state
         cont_out = 0.0
@@ -413,33 +425,39 @@ class LSTM_controller(object):
         for ind in range(self.plant_output_size):
             plt.plot(plot_time, pred_resp[:,ind], '-', label = 'con pred ' + self.outvar_names[ind])
             plt.plot(plot_time, real_resp[:,ind], '-', label = 'con real ' + self.outvar_names[ind])
+        plt.plot(plot_time, curr_noise, '-', label = 'input noise')
         plt.title('Controlled plant response (Real vs Predicted)')
         plt.legend()
 
 
 ## Main program
 ## An instance of controller class
-LSTM_cont = LSTM_controller(epitime = 2, timestep= 0.1)
-LSTM_cont.config_lstm(batch_size= 16, plant_state_size = 32, cont_state_size = 32, setout = [0.0,0.0])
+LSTM_cont = LSTM_controller(epitime = 6.4, timestep= 0.1)
+LSTM_cont.config_lstm(batch_size= 128, plant_state_size = 128, cont_state_size = 128, setout = [0.0,-1.0,0.0])
+LSTM_cont.config_noise(nF = 5.0)
 LSTM_cont.initialize_variables()
 iterations = 100
 
-LSTM_cont.train_data(episodes = 512)
+LSTM_cont.train_data(episodes = 1024)
+LSTM_cont.train_plant(epochs = 100)
+LSTM_cont.train_cont(epochs = 10)
 
 try:
     for it in range (iterations):
-        print("Iteration:" + str(it))
+        print("Iteration:" + str(it+1))
         LSTM_cont.train_data(episodes = 32)
-        LSTM_cont.train_plant(epochs = 3)
-        LSTM_cont.train_cont(epochs = 3)
+        LSTM_cont.train_plant(epochs = 10)
+        LSTM_cont.train_cont(epochs = 10)
 
 except KeyboardInterrupt:
     print("Execution interupted. Generating plots before ending.")
 
+comp_noise = LSTM_cont.gen_noise()
+comp_init_state = LSTM_cont.gen_init_state()
 plt.figure(1)
-LSTM_cont.plot_plant_dynamics()
+LSTM_cont.plot_plant_dynamics(noise=comp_noise,init_state=comp_init_state)
 plt.figure(2)
-LSTM_cont.plot_cont_plant_dynamics()
+LSTM_cont.plot_cont_plant_dynamics(noise=comp_noise,init_state=comp_init_state)
 plt.figure(3)
 LSTM_cont.plot_plant_cost_hist()
 plt.figure(4)
@@ -447,5 +465,9 @@ LSTM_cont.plot_cont_cost_hist()
 plt.show()
 
 print("Displaying plots")
+print("Noise:")
+print(comp_noise)
+print("Initial state:")
+print(comp_init_state)
 
 LSTM_cont.sess.close()
