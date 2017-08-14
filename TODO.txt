@@ -1,0 +1,7 @@
+14 - 18 Aug:
+NN_Control_algorithm.py:
+1) Model class: allow users to define multiple dynamics. But need to follow function names. See code comments.
+2) Separate main scripts from class
+3) saving values pickling, saving trained NN models (Adam solver??)
+4) forget data history
+5) starting iterations at last values

@@ -82,23 +82,63 @@ class FBCell(tf.contrib.rnn.LSTMCell):
     def output_size(self):
         return self._output_size
 
+class Model(object):
+    def select_model(self, name):
+        if name == 'Pendulum': return Pendulum()
+        # if name == 'Quantum' : return Quantum() 
+        assert 0, 'Model name does not exist' + name 
+
+class Pendulum(Model):
+    def __init__(self):
+        self.config_dynamics()
+
+    def config_dynamics(self, g=9.8, mu=0.1):
+        self.g = g #pendumlem weight
+        self.mu = mu #pendulem dampening
+
+
+    def dynamics(self,state,t,u): 
+        x, p = state
+        dx = p
+        dp =  -self.g * np.sin(x) - self.mu * p  + u
+        return [dx,dp]
+
+    def variables_name(self):
+        return ["pos x","pos y","ang mom"]
+
+    def real_state_to_response(self, real_state):
+    ## Transforming angular position to x,y coordinate
+        return np.array([np.sin(real_state[0]),-np.cos(real_state[0]),real_state[1]])
+
+## TODO: add quantum simulation here, note it must have the same function name 'config_dynamics' and 'dynamics'
+# class Quantum(Model):
+#     def __init__(self):
+#         self.config_dynamics()
+#     def config_dynamics(self, ):
+#         pass
+#     def dynamics(self, ):
+#         pass
 
 class LSTM_controller(object):
-    def __init__(self, epitime = 1, timestep = 0.1):
+    def __init__(self, epitime = 1, timestep = 0.1, model_name = 'Pendulum'):
         self.epitime = epitime
         self.timestep = timestep
+        self.t_arr = np.array([0.0,self.timestep]) # For using odeint
         self.num_steps = int(math.ceil(self.epitime/self.timestep))
+        ## Allow users to define multiple dynamical models and train controller for that model
+        self.model_name = model_name
+        self.model = Model().select_model(model_name)
+        self.outvar_names = self.model.variables_name()
         self.dtype = tf.float64
         self.sqrttimestep = np.sqrt(self.timestep)
         self.batch_count = 0
         self.data_count = 0
 
+
         self.sess = tf.Session()
         
         #run default configurations
-        self.config_pend()
         self.config_noise()
-        # self.config_lstm()
         
         #data storage
         self.force_data = [ ] 
@@ -108,17 +148,11 @@ class LSTM_controller(object):
         #cost history storage
         self.plant_hist = [ ]
         self.cont_hist = [ ]
-    
-    def config_pend(self, g=9.8, mu=0.1):
-        self.g = g #pendumlem weight
-        self.mu = mu #pendulem dampening
-        self.t_arr = np.array([0.0,self.timestep])
-        self.outvar_names = ["pos x","pos y","ang mom"]
         
     def config_noise(self, nF = 5):
         self.nF = nF #magnitude of noise 
     
-    ## change this to a single layer lstm
+    ## TODO: potentially create multiple layers LSTM
     def config_lstm(self, batch_size = 128, plant_state_size = 128, cont_state_size = 32, input_size = 1, output_size = 3, learning_rate = 0.001, setout=None):
         self.batch_size = batch_size
         self.plant_state_size = plant_state_size
@@ -129,14 +163,13 @@ class LSTM_controller(object):
         self.cont_output_size = self.plant_input_size #controller ouptut must be plant input
         self.learning_rate = learning_rate
         
-        #If setout is None set target to bring all outputs to zero
+        ## If setout is None set target to bring all outputs to zero
         if setout is None:
             self.setout = tf.constant(np.zeros(self.plant_output_size), dtype = self.dtype)
         else:
             self.setout = tf.constant(setout, dtype = self.dtype)
         
-        
-        # plant variables
+        ## plant variables
         self.plant_in = tf.placeholder(self.dtype, [None, self.num_steps, self.plant_input_size])
         self.plant_true = tf.placeholder(self.dtype, [None, self.num_steps, self.plant_output_size])
         self.cstate_plant = tf.placeholder(self.dtype, [None, self.plant_state_size])
@@ -147,7 +180,7 @@ class LSTM_controller(object):
             self.plant_pred, self.plant_state_tuple = tf.nn.dynamic_rnn(self.cell_plant, self.plant_in, initial_state = self.plant_init_state)
         self.plant_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,'plant')
         
-        # controller variables
+        ## controller variables
         self.cont_in = tf.placeholder(self.dtype, [None, 1, self.cont_input_size])
         self.cstate_cont = tf.placeholder(self.dtype, [None, self.cont_state_size])
         self.hstate_cont = tf.placeholder(self.dtype, [None, self.cont_state_size])
@@ -163,8 +196,8 @@ class LSTM_controller(object):
         with tf.variable_scope('feedback'):
             self.cell_fb = FBCell(self.cell_plant,self.cell_cont)
             self.fb_pred, self.tf_state_tuple = tf.nn.dynamic_rnn(self.cell_fb, self.fb_in, initial_state = self.fb_init_state)
-
         self.fb_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'feedback')
+
         # step 2 - fitting plant to data: cost and optimizer
         self.plant_cost = tf.reduce_mean((self.plant_pred - self.plant_true)*(self.plant_pred - self.plant_true))
         self.plant_optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.plant_cost, var_list=self.plant_var_list)
@@ -181,15 +214,6 @@ class LSTM_controller(object):
         self.zeros_batch_cont_state = np.zeros([self.batch_size, self.cont_state_size])
         self.zeros_batch_plant_in = np.zeros([self.batch_size, self.plant_input_size])
         self.zeros_one_plant_in = np.zeros([1, self.plant_input_size])
-
-    def damped_pen (self,state,t,u): 
-        x, p = state
-        dx = p
-        dp =  -self.g * np.sin(x) - self.mu * p  + u
-        return [dx,dp]
-    
-    def real_state_to_response(self, real_state):
-        return np.array([np.sin(real_state[0]),-np.cos(real_state[0]),real_state[1]])
     
     def gen_noise(self):
         temp = np.random.normal(0, self.nF)
@@ -251,8 +275,7 @@ class LSTM_controller(object):
     ## Step 1: generate data with real plant and current NN controller
     def train_data(self, episodes = 1000):
         print ('Testing controller...') 
-        for episode in range(episodes):
-            #print ('Generating episode:{}'.format(episode))   
+        for episode in range(episodes):  
             ## noise input data
             curr_noise = self.gen_noise()
             curr_force = np.zeros([self.num_steps, self.plant_input_size])
@@ -264,22 +287,23 @@ class LSTM_controller(object):
             cont_out = 0.0
             for time in range(self.num_steps):
                 curr_u = curr_noise[time] + cont_out
-                oderes = si.odeint(self.damped_pen,curr_pstate,self.t_arr,args=(curr_u,))
+                oderes = si.odeint(self.model.dynamics, curr_pstate,self.t_arr,args=(curr_u,))
                 curr_pstate = oderes[-1,:]
-                resp_out = self.real_state_to_response(curr_pstate)
-            
+                if self.model_name == 'Pendulum':
+                    resp_out = self.model.real_state_to_response(curr_pstate)
+                else: pass
+
                 cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                         self.cont_in: np.reshape(resp_out, [1,1,self.cont_input_size]), 
                         self.cstate_cont: curr_cstate, 
                         self.hstate_cont: curr_hstate})
-                cont_out = np.reshape(cont_out, [self.cont_output_size])
+
+                cont_out = np.reshape(cont_out, [ ])
 
                 curr_force[time,:] = curr_u
                 curr_resp[time,:] = resp_out
             
             self.add_fpn_data(curr_noise,curr_force,curr_resp)
-
-        # print ("train force data:{}".format(self.force_data))
 
     ## Step 2: train NN plant using measured data of real plant
     def train_plant(self, epochs = 10):
@@ -336,7 +360,7 @@ class LSTM_controller(object):
 
             self.cont_hist.append(curr_cost)
             
-        print ('Final train cont cost:{}'.format(curr_cost))
+        print ('Final train controller cost:{}'.format(curr_cost))
 
     def plot_plant_cost_hist(self):
         plt.plot(range(len(self.plant_hist)), self.plant_hist, '-', label = 'plant costs')
@@ -363,9 +387,12 @@ class LSTM_controller(object):
         real_resp = np.zeros([self.num_steps, self.plant_output_size])
         for time in range(self.num_steps):
             curr_u = curr_noise[time]
-            oderes = si.odeint(self.damped_pen,curr_pstate,self.t_arr,args=(curr_u,))
+            oderes = si.odeint(self.model.dynamics,curr_pstate,self.t_arr,args=(curr_u,))
             curr_pstate = oderes[-1,:]
-            resp_out = self.real_state_to_response(curr_pstate)
+
+            if self.model_name == 'Pendulum':
+                resp_out = self.model.real_state_to_response(curr_pstate)
+
             real_resp[time,:] = resp_out
 
         ## Same noise data for plotting plant predicted position with/without controller
@@ -401,14 +428,16 @@ class LSTM_controller(object):
         cont_out = 0.0
         for time in range(self.num_steps):
             curr_u = curr_noise[time] + cont_out
-            oderes = si.odeint(self.damped_pen,curr_pstate,self.t_arr,args=(curr_u,))
+            oderes = si.odeint(self.model.dynamics,curr_pstate,self.t_arr,args=(curr_u,))
             curr_pstate = oderes[-1,:]
-            resp_out = self.real_state_to_response(curr_pstate)
+            if self.model_name == 'Pendulum':
+                resp_out = self.model.real_state_to_response(curr_pstate)
+            else: pass
             cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                     self.cont_in: np.reshape(resp_out, [1,1,self.cont_input_size]), 
                     self.cstate_cont: curr_cstate, 
                     self.hstate_cont: curr_hstate})
-            cont_out = np.reshape(cont_out, [self.cont_output_size])
+            cont_out = np.reshape(cont_out, [ ])
             real_resp[time,:] = resp_out
         
         ## Plot controlled signal with NN plant
@@ -432,22 +461,22 @@ class LSTM_controller(object):
 
 ## Main program
 ## An instance of controller class
-LSTM_cont = LSTM_controller(epitime = 6.4, timestep= 0.1)
+LSTM_cont = LSTM_controller(epitime = 3.2, timestep= 0.1)
 LSTM_cont.config_lstm(batch_size= 128, plant_state_size = 128, cont_state_size = 128, setout = [0.0,-1.0,0.0])
 LSTM_cont.config_noise(nF = 5.0)
 LSTM_cont.initialize_variables()
-iterations = 100
+iterations = 2
 
 LSTM_cont.train_data(episodes = 1024)
-LSTM_cont.train_plant(epochs = 100)
-LSTM_cont.train_cont(epochs = 10)
+LSTM_cont.train_plant(epochs = 128)
+LSTM_cont.train_cont(epochs = 32)
 
 try:
     for it in range (iterations):
         print("Iteration:" + str(it+1))
         LSTM_cont.train_data(episodes = 32)
-        LSTM_cont.train_plant(epochs = 10)
-        LSTM_cont.train_cont(epochs = 10)
+        LSTM_cont.train_plant(epochs = 16)
+        LSTM_cont.train_cont(epochs = 16)
 
 except KeyboardInterrupt:
     print("Execution interupted. Generating plots before ending.")
