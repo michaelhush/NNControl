@@ -8,4 +8,4 @@ NN_Control_algorithm.py:
 - all trainable variable values unchanged between iterations
 - only need to record last cell states and hidden states 
 - Last state values are obtained by feeding the last batch data
-- Not sure about the last state values for plotting 
+- Not sure about the last state values for plotting (useful if you want to see how much better controller does each iteration)

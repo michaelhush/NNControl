@@ -550,30 +550,75 @@ class LSTM_controller(object):
             self.cstate_cont: self.train_cont_cstate, 
             self.hstate_cont: self.train_cont_hstate
             })
-        
+    
+    def save_parameters(self):
+        ''' save parameters as a dictionary'''
+        sim_dict = {'model_name':self.model_name, 'epitime': self.epitime, 'timestep': self.timestep, 'noise_magnitude': self.nF}
+        para_dict ={'set_out': self.set_out, 'plant_state_size':self.plant_state_size, 'cont_state_size': self.cont_state_size, 'learning_rate': self.learning_rate }
+        pickle.dump(sim_dict, open('sim_dict.p','wb')) # change name
+        pickle.dump(para_dict,open('para_dict.p','wb'))
+
+    def save_data(self):
+        ''' save all training data'''  
+        pickle.dump(noise_data, open('noise_data.p','wb'))
+        pickle.dump(force_data, open('force_data.p','wb'))
+        pickle.dump(pos_data, open('pos_data.p','wb'))
+
+## TODO: figure out how to change the names for different scripts
+    def save_trained_NN(self):
+        saver = tf.train.Saver()
+        for v in self.plant_var_list:
+            tf.add_to_collection('plant_var', v)
+            saver.save(self.sess, 'plant_model_save')
+        for v in self.cont_var_list:
+            tf.add_to_collection('cont_var',v)
+            saver.save(self.sess, 'cont_model_save')
+
+    def load_parameters(self):
+        sim_dict = pickle.load(open('sim_dict.p','rb'))
+        para_dict = pickle.load(open('para_dict.p','rb'))
+        model_name, epitime, timestep, noise_magnitude = sim_dict['model_name'], sim_dict['epitime'], sim_dict['timestep'], sim_dict['noise_magnitude']
+        set_out, plant_state_size, cont_state_size, learning_rate = para_dict['set_out'], para_dict['plant_state_size'], para_dict['cont_state_size'], para_dict['learning_rate']
+        return model_name, epitime, timestep, noise_magnitude, set_out, plant_state_size, cont_state_size, learning_rate
+
+    def load_data(self):
+        noise_data = pickle.load('noise_data.p','rb')
+        force_data = pickle.load('force_data.p','rb')
+        pos_data = pickle.load('pos_data.p', 'rb')
+        return noise_data, force_data, pos_data
+
+    def load_trained_NN(self):
+        plant_saver = tf.train.import_meta_graph('plant_model_save.meta')
+        plant_saver.restore(self.sess, 'plant_model_save')
+        self.plant_var_list = tf.get_collection('plant_var')
+        cont_saver = tf.train.import_meta_graph('cont_model_save.meta')
+        cont_saver.restore(self.sess, 'cont_model_save')
+        self.cont_var_list = tf.get_collection('cont_var')
 
 ## Main program
 ## An instance of controller class
 LSTM_cont = LSTM_controller(epitime = 6.4, timestep= 0.1)
-LSTM_cont.config_lstm(batch_size= 32, plant_state_size = 64, cont_state_size = 64, setout = [0.0,-1.0,0.0])
+LSTM_cont.config_lstm(batch_size= 2, plant_state_size = 64, cont_state_size = 64, setout = [0.0,-1.0,0.0])
 LSTM_cont.config_noise(nF = 5.0)
 LSTM_cont.initialize_variables()
-iterations = 10
+iterations = 1
 
-LSTM_cont.train_data(episodes = 1024)
-LSTM_cont.train_plant(epochs = 84)
-LSTM_cont.train_cont(epochs = 84)
+LSTM_cont.train_data(episodes = 2)
+LSTM_cont.train_plant(epochs = 2)
+LSTM_cont.train_cont(epochs = 2)
 LSTM_cont.update_cont_plant_states()
 try:
     for it in range (iterations):
         print("Iteration:" + str(it+1))
-        LSTM_cont.train_data(episodes = 32)
-        LSTM_cont.train_plant(epochs = 32)
-        LSTM_cont.train_cont(epochs = 32)
+        LSTM_cont.train_data(episodes = 2)
+        LSTM_cont.train_plant(epochs = 2)
+        LSTM_cont.train_cont(epochs = 2)
         LSTM_cont.update_cont_plant_states()
 
 except KeyboardInterrupt:
     print("Execution interupted. Generating plots before ending.")
+
+LSTM_cont.save_trained_NN()
 
 comp_noise = LSTM_cont.gen_noise()
 comp_init_state = LSTM_cont.gen_init_state()
@@ -592,5 +637,10 @@ print("Noise:")
 print(comp_noise)
 print("Initial state:")
 print(comp_init_state)
+# LSTM_cont.sess.close() #TODO: fix error of attempting to use a close session
 
-LSTM_cont.sess.close()
+LSTM_cont2 = LSTM_controller(epitime = 6.4, timestep= 0.1)
+LSTM_cont2.load_trained_NN()
+LSTM_cont.train_data(episodes = 32)
+LSTM_cont.train_plant(epochs = 32)
+LSTM_cont.train_cont(epochs = 32)
