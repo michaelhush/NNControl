@@ -5,3 +5,7 @@ NN_Control_algorithm.py:
 3) saving values pickling, saving trained NN models (Adam solver??)
 4) forget data history
 5) starting iterations at last values
+- all trainable variable values unchanged between iterations
+- only need to record last cell states and hidden states 
+- Last state values are obtained by feeding the last batch data
+- Not sure about the last state values for plotting 

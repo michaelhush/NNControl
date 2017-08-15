@@ -129,6 +129,7 @@ class LSTM_controller(object):
         self.model_name = model_name
         self.model = Model().select_model(model_name)
         self.outvar_names = self.model.variables_name()
+
         self.dtype = tf.float64
         self.sqrttimestep = np.sqrt(self.timestep)
         self.batch_count = 0
@@ -196,7 +197,6 @@ class LSTM_controller(object):
         with tf.variable_scope('feedback'):
             self.cell_fb = FBCell(self.cell_plant,self.cell_cont)
             self.fb_pred, self.tf_state_tuple = tf.nn.dynamic_rnn(self.cell_fb, self.fb_in, initial_state = self.fb_init_state)
-        self.fb_var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'feedback')
 
         # step 2 - fitting plant to data: cost and optimizer
         self.plant_cost = tf.reduce_mean((self.plant_pred - self.plant_true)*(self.plant_pred - self.plant_true))
@@ -205,7 +205,7 @@ class LSTM_controller(object):
         # step 3 - fitting controller to plant and target: cost and optimizer
         self.fb_cost = tf.reduce_mean((self.fb_pred - self.setout)*(self.fb_pred - self.setout))
         # self.fb_cost = tf.reduce_mean(self.fb_pred*self.fb_pred)
-        self.fb_optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.fb_cost, var_list= [self.cont_var_list, self.fb_var_list])
+        self.fb_optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.fb_cost, var_list= self.cont_var_list)
         
         # zero arrays 
         self.zeros_one_plant_state = np.zeros([1, self.plant_state_size])
@@ -214,7 +214,21 @@ class LSTM_controller(object):
         self.zeros_batch_cont_state = np.zeros([self.batch_size, self.cont_state_size])
         self.zeros_batch_plant_in = np.zeros([self.batch_size, self.plant_input_size])
         self.zeros_one_plant_in = np.zeros([1, self.plant_input_size])
-    
+
+        # Initialize plant_cstate, plant_hstate, cont_cstate, cont_hstate
+        self.train_plant_cstate = self.zeros_batch_plant_state
+        self.train_plant_hstate = self.zeros_batch_plant_state
+        self.plot_plant_cstate = self.zeros_one_plant_state
+        self.plot_plant_hstate = self.zeros_one_plant_state
+        self.train_cont_cstate = self.zeros_batch_cont_state
+        self.train_cont_hstate = self.zeros_batch_cont_state
+        self.plot_cont_cstate = self.zeros_one_cont_state
+        self.plot_cont_hstate = self.zeros_one_cont_state
+        self.data_cont_cstate = self.zeros_one_cont_state
+        self.data_cont_hstate = self.zeros_one_cont_state
+        self.train_fb_diff = self.zeros_batch_plant_in
+        self.plot_fb_diff = self.zeros_one_plant_in
+
     def gen_noise(self):
         temp = np.random.normal(0, self.nF)
         return np.full([self.num_steps, self.plant_input_size], temp)
@@ -282,12 +296,15 @@ class LSTM_controller(object):
             curr_resp = np.zeros([self.num_steps, self.plant_output_size])
             
             curr_pstate = self.gen_init_state()
-            curr_cstate = self.zeros_one_cont_state
-            curr_hstate = self.zeros_one_cont_state
+            # curr_cstate = self.zeros_one_cont_state
+            # curr_hstate = self.zeros_one_cont_state
+            curr_cstate = self.data_cont_cstate
+            curr_hstate = self.data_cont_hstate
+
             cont_out = 0.0
             for time in range(self.num_steps):
                 curr_u = curr_noise[time] + cont_out
-                oderes = si.odeint(self.model.dynamics, curr_pstate,self.t_arr,args=(curr_u,))
+                oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr, args=(curr_u,))
                 curr_pstate = oderes[-1,:]
                 if self.model_name == 'Pendulum':
                     resp_out = self.model.real_state_to_response(curr_pstate)
@@ -302,7 +319,7 @@ class LSTM_controller(object):
 
                 curr_force[time,:] = curr_u
                 curr_resp[time,:] = resp_out
-            
+
             self.add_fpn_data(curr_noise,curr_force,curr_resp)
 
     ## Step 2: train NN plant using measured data of real plant
@@ -317,23 +334,28 @@ class LSTM_controller(object):
                 force_batch, resp_batch = self.get_fp_batch()
 
                 self.sess.run(self.plant_optimizer, feed_dict = {self.plant_in: force_batch, 
-                    self.cstate_plant: self.zeros_batch_plant_state, 
-                    self.hstate_plant: self.zeros_batch_plant_state, 
+                    # self.cstate_plant: self.zeros_batch_plant_state, 
+                    # self.hstate_plant: self.zeros_batch_plant_state, 
+                    self.cstate_plant: self.train_plant_cstate,
+                    self.hstate_plant: self.train_plant_hstate,
                     self.plant_true: resp_batch})
             
             curr_cost = self.sess.run(self.plant_cost, feed_dict = {self.plant_in: force_batch, 
-                self.cstate_plant: self.zeros_batch_cont_state, 
-                self.hstate_plant: self.zeros_batch_cont_state, 
+                # self.cstate_plant: self.zeros_batch_cont_state, 
+                # self.hstate_plant: self.zeros_batch_cont_state, 
+                self.cstate_plant: self.train_plant_cstate,
+                self.hstate_plant: self.train_plant_hstate,
                 self.plant_true : resp_batch})
             
             self.plant_hist.append(curr_cost)
-            
+
         print ('Final train plant cost:{}'.format(curr_cost))
+
 
     ## Step 3: train NN controller using current NN plant
     def train_cont(self,epochs = 10):
         print ('Training controller...')
-        train_steps = int(epochs*self.data_count/self.batch_size)
+        # train_steps = int(epochs*self.data_count/self.batch_size)
         self.shuffle_n_data()
         self.batch_count=0
         for epo in range(epochs):
@@ -344,22 +366,33 @@ class LSTM_controller(object):
 
                 self.sess.run(self.fb_optimizer, feed_dict = {
                     self.fb_in: noise_batch, 
-                    self.fb_diff: self.zeros_batch_plant_in,
-                    self.cstate_plant: self.zeros_batch_plant_state, 
-                    self.hstate_plant: self.zeros_batch_plant_state, 
-                    self.cstate_cont: self.zeros_batch_cont_state, 
-                    self.hstate_cont: self.zeros_batch_cont_state})
+                    # self.fb_diff: self.zeros_batch_plant_in,
+                    self.fb_diff: self.train_fb_diff,
+                    # self.cstate_plant: self.zeros_batch_plant_state, 
+                    # self.hstate_plant: self.zeros_batch_plant_state,
+                    self.cstate_plant: self.train_plant_cstate,
+                    self.hstate_plant: self.train_plant_hstate,
+                    # self.cstate_cont: self.zeros_batch_cont_state, 
+                    # self.hstate_cont: self.zeros_batch_cont_state
+                    self.cstate_cont : self.train_cont_cstate,
+                    self.hstate_cont : self.train_cont_hstate
+                    })
             
             curr_cost = self.sess.run(self.fb_cost, feed_dict = {
                 self.fb_in: noise_batch, 
-                self.fb_diff: self.zeros_batch_plant_in,
-                self.cstate_plant: self.zeros_batch_plant_state, 
-                self.hstate_plant: self.zeros_batch_plant_state, 
-                self.cstate_cont: self.zeros_batch_cont_state, 
-                self.hstate_cont: self.zeros_batch_cont_state})
-
+                # self.fb_diff: self.zeros_batch_plant_in,
+                self.fb_diff: self.train_fb_diff,
+                # self.cstate_plant: self.zeros_batch_plant_state, 
+                # self.hstate_plant: self.zeros_batch_plant_state, 
+                self.cstate_plant: self.train_plant_cstate,
+                self.hstate_plant: self.train_plant_hstate,
+                # self.cstate_cont: self.zeros_batch_cont_state, 
+                # self.hstate_cont: self.zeros_batch_cont_state
+                self.cstate_cont : self.train_cont_cstate,
+                self.hstate_cont : self.train_cont_hstate
+                })
             self.cont_hist.append(curr_cost)
-            
+        
         print ('Final train controller cost:{}'.format(curr_cost))
 
     def plot_plant_cost_hist(self):
@@ -382,8 +415,7 @@ class LSTM_controller(object):
             curr_pstate = self.gen_init_state()
         else:
             curr_pstate = init_state
-        
-        
+         
         real_resp = np.zeros([self.num_steps, self.plant_output_size])
         for time in range(self.num_steps):
             curr_u = curr_noise[time]
@@ -398,8 +430,11 @@ class LSTM_controller(object):
         ## Same noise data for plotting plant predicted position with/without controller
         pred_resp = self.sess.run(self.plant_pred, feed_dict = {
             self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]), 
-            self.cstate_plant: self.zeros_one_plant_state, 
-            self.hstate_plant: self.zeros_one_plant_state})        
+            # self.cstate_plant: self.zeros_one_plant_state, 
+            # self.hstate_plant: self.zeros_one_plant_state
+            self.cstate_plant: self.plot_plant_cstate,
+            self.hstate_plant: self.plot_plant_hstate
+            })        
         pred_resp = np.reshape(pred_resp, [self.num_steps, self.plant_output_size])
         
         plot_time = np.arange(0, self.epitime, self.timestep)
@@ -409,6 +444,13 @@ class LSTM_controller(object):
         plt.plot(plot_time, curr_noise, '-', label = 'input noise')
         plt.title('Uncontrolled plant response (Real vs Predicted)')
         plt.legend()
+
+        # get next plot plant states
+        self.plot_plant_cstate, self.plot_plant_hstate = self.sess.run(self.plant_state_tuple, feed_dict= {
+            self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
+            self.cstate_plant: self.plot_plant_cstate,
+            self.hstate_plant: self.plot_plant_hstate
+            })
 
     def plot_cont_plant_dynamics(self,noise=None, init_state=None):  
         
@@ -422,13 +464,15 @@ class LSTM_controller(object):
             curr_pstate = init_state
         
         real_resp = np.zeros([self.num_steps, self.plant_output_size])
-        curr_pstate = self.gen_init_state()
-        curr_cstate = self.zeros_one_cont_state
-        curr_hstate = self.zeros_one_cont_state
+        # curr_cstate = self.zeros_one_cont_state
+        # curr_hstate = self.zeros_one_cont_state
+        curr_cstate = self.plot_cont_cstate
+        curr_hstate = self.plot_cont_hstate
+
         cont_out = 0.0
         for time in range(self.num_steps):
             curr_u = curr_noise[time] + cont_out
-            oderes = si.odeint(self.model.dynamics,curr_pstate,self.t_arr,args=(curr_u,))
+            oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr,args=(curr_u,))
             curr_pstate = oderes[-1,:]
             if self.model_name == 'Pendulum':
                 resp_out = self.model.real_state_to_response(curr_pstate)
@@ -443,11 +487,17 @@ class LSTM_controller(object):
         ## Plot controlled signal with NN plant
         pred_resp = self.sess.run(self.fb_pred, feed_dict = {
             self.fb_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
-            self.fb_diff: self.zeros_one_plant_in,
-            self.cstate_plant: self.zeros_one_plant_state, 
-            self.hstate_plant: self.zeros_one_plant_state, 
-            self.cstate_cont: self.zeros_one_cont_state, 
-            self.hstate_cont: self.zeros_one_cont_state})
+            # self.fb_diff: self.zeros_one_plant_in,
+            self.fb_diff: self.plot_fb_diff,
+            # self.cstate_plant: self.zeros_one_plant_state, 
+            # self.hstate_plant: self.zeros_one_plant_state, 
+            self.cstate_plant: self.plot_plant_cstate,
+            self.hstate_plant: self.plot_plant_hstate,
+            # self.cstate_cont: self.zeros_one_cont_state, 
+            # self.hstate_cont: self.zeros_one_cont_state
+            self.cstate_cont: self.plot_cont_cstate,
+            self.hstate_cont: self.plot_cont_hstate
+            })
         pred_resp = np.reshape(pred_resp, [self.num_steps, self.plant_output_size])
             
         plot_time = np.arange(0, self.epitime, self.timestep)
@@ -458,25 +508,69 @@ class LSTM_controller(object):
         plt.title('Controlled plant response (Real vs Predicted)')
         plt.legend()
 
+        # next state values
+        self.plot_cont_cstate, self.plot_cont_hstate = curr_cstate, curr_hstate
+
+        self.plot_fb_diff = self.sess.run(self.tf_state_tuple[-1], feed_dict={
+            self.fb_in:  np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
+            self.fb_diff: self.plot_fb_diff, 
+            self.cstate_plant: self.plot_plant_cstate,
+            self.hstate_plant: self.plot_plant_hstate,
+            self.cstate_cont: self.plot_cont_cstate,
+            self.hstate_cont: self.plot_cont_hstate
+            })
+
+    def update_cont_plant_states(self):
+        ''' allow last state values be fed into next iteration,
+            If not called, state values for next iteration are zeros.'''
+
+        self.train_fb_diff = self.sess.run(self.tf_state_tuple[-1], feed_dict ={
+            self.fb_in: self.noise_data[-self.batch_size:], 
+            self.fb_diff: self.train_fb_diff,
+            self.cstate_plant: self.train_plant_cstate,
+            self.hstate_plant: self.train_plant_hstate,
+            self.cstate_cont : self.train_cont_cstate,
+            self.hstate_cont : self.train_cont_hstate
+            })
+
+        (self.train_plant_cstate, self.train_plant_hstate) = self.sess.run(self.plant_state_tuple, feed_dict= {
+            self.plant_in: self.force_data[-self.batch_size:], 
+            self.cstate_plant: self.train_plant_cstate,
+            self.hstate_plant: self.train_plant_hstate
+            })
+
+        cont_out, (self.data_cont_cstate, self.data_cont_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+            self.cont_in: np.reshape(self.pos_data[-1][-1:],[1,1,self.cont_input_size]),
+            self.cstate_cont: self.data_cont_cstate, 
+            self.hstate_cont: self.data_cont_hstate
+            })
+        resp = np.reshape(np.array(self.pos_data[-self.batch_size:])[:,-1,:] , [self.batch_size, 1, self.cont_input_size])
+        cont_out, (self.train_cont_cstate, self.train_cont_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+            self.cont_in: resp,
+            self.cstate_cont: self.train_cont_cstate, 
+            self.hstate_cont: self.train_cont_hstate
+            })
+        
 
 ## Main program
 ## An instance of controller class
-LSTM_cont = LSTM_controller(epitime = 3.2, timestep= 0.1)
-LSTM_cont.config_lstm(batch_size= 128, plant_state_size = 128, cont_state_size = 128, setout = [0.0,-1.0,0.0])
+LSTM_cont = LSTM_controller(epitime = 6.4, timestep= 0.1)
+LSTM_cont.config_lstm(batch_size= 32, plant_state_size = 64, cont_state_size = 64, setout = [0.0,-1.0,0.0])
 LSTM_cont.config_noise(nF = 5.0)
 LSTM_cont.initialize_variables()
-iterations = 2
+iterations = 10
 
 LSTM_cont.train_data(episodes = 1024)
-LSTM_cont.train_plant(epochs = 128)
-LSTM_cont.train_cont(epochs = 32)
-
+LSTM_cont.train_plant(epochs = 84)
+LSTM_cont.train_cont(epochs = 84)
+LSTM_cont.update_cont_plant_states()
 try:
     for it in range (iterations):
         print("Iteration:" + str(it+1))
         LSTM_cont.train_data(episodes = 32)
-        LSTM_cont.train_plant(epochs = 16)
-        LSTM_cont.train_cont(epochs = 16)
+        LSTM_cont.train_plant(epochs = 32)
+        LSTM_cont.train_cont(epochs = 32)
+        LSTM_cont.update_cont_plant_states()
 
 except KeyboardInterrupt:
     print("Execution interupted. Generating plots before ending.")
