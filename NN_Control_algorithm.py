@@ -14,8 +14,6 @@ import tensorflow as tf
 import os
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # removes warning
 
-
-
 class SOCell(tf.contrib.rnn.LSTMCell):
     
     def __init__(self,state_size,output_size, state_is_tuple = True, dtype=tf.float64):

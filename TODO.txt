@@ -9,3 +9,4 @@ NN_Control_algorithm.py:
 - only need to record last cell states and hidden states 
 - Last state values are obtained by feeding the last batch data
 - Not sure about the last state values for plotting (useful if you want to see how much better controller does each iteration)
+6) Add in features for multi-layer LSTM.
