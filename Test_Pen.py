@@ -24,7 +24,7 @@ print ('loading complete')
 def NN_test():
 	sess = tf.Session()
 	NN_saver = tf.train.import_meta_graph('defaultNNmodel_save.meta') ## change key name for different NN_dict key
-	NN_saver.restore(sess, "defaultNNmodel_save")
+	NN_saver.restore(sess, 'defaultNNmodel_save')
 	[xNN, y_pred, yNN_] = tf.get_collection('defaultNNvars')
 	NN_cost = tf.reduce_mean((yNN_ - y_pred)*(yNN_ - y_pred))
 	test_NN_cost =  sess.run(NN_cost, feed_dict={xNN: xtestset, yNN_: ytestset})

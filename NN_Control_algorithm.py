@@ -1,5 +1,3 @@
-## Control algorith -- greedy
-## An NN controller for a speicific plant with input noise (disturbance)
 from __future__ import division
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +10,7 @@ import pickle
 
 import tensorflow as tf
 import os
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # removes warning
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # removes warning
 
 class SOCell(tf.contrib.rnn.LSTMCell):
     
@@ -132,7 +130,6 @@ class LSTM_controller(object):
         self.batch_count = 0
         self.data_count = 0
 
-
         self.sess = tf.Session()
         
         #run default configurations
@@ -149,9 +146,9 @@ class LSTM_controller(object):
         
     def config_noise(self, nF = 5):
         self.nF = nF #magnitude of noise 
-    
-    ## TODO: potentially create multiple layers LSTM
-    def config_lstm(self, batch_size = 128, plant_state_size = 128, cont_state_size = 32, input_size = 1, output_size = 3, learning_rate = 0.001, setout=None):
+
+    def config_lstm_para(self, batch_size = 128, plant_state_size = 128, cont_state_size = 32, 
+                                input_size = 1, output_size = 3, learning_rate = 0.001, setout=None):
         self.batch_size = batch_size
         self.plant_state_size = plant_state_size
         self.cont_state_size = cont_state_size
@@ -166,7 +163,35 @@ class LSTM_controller(object):
             self.setout = tf.constant(np.zeros(self.plant_output_size), dtype = self.dtype)
         else:
             self.setout = tf.constant(setout, dtype = self.dtype)
-        
+
+        ## call initialize states after all dimensions are defined    
+        self.initialize_states()
+    
+    def initialize_states(self):
+        # zero arrays 
+        self.zeros_one_plant_state = np.zeros([1, self.plant_state_size])
+        self.zeros_one_cont_state = np.zeros([1, self.cont_state_size])
+        self.zeros_batch_plant_state = np.zeros([self.batch_size, self.plant_state_size])
+        self.zeros_batch_cont_state = np.zeros([self.batch_size, self.cont_state_size])
+        self.zeros_batch_plant_in = np.zeros([self.batch_size, self.plant_input_size])
+        self.zeros_one_plant_in = np.zeros([1, self.plant_input_size])
+
+        # Initialize plant_cstate, plant_hstate, cont_cstate, cont_hstate
+        self.train_plant_cstate = self.zeros_batch_plant_state
+        self.train_plant_hstate = self.zeros_batch_plant_state
+        self.plot_plant_cstate = self.zeros_one_plant_state
+        self.plot_plant_hstate = self.zeros_one_plant_state
+        self.train_cont_cstate = self.zeros_batch_cont_state
+        self.train_cont_hstate = self.zeros_batch_cont_state
+        self.plot_cont_cstate = self.zeros_one_cont_state
+        self.plot_cont_hstate = self.zeros_one_cont_state
+        self.data_cont_cstate = self.zeros_one_cont_state
+        self.data_cont_hstate = self.zeros_one_cont_state
+        self.train_fb_diff = self.zeros_batch_plant_in
+        self.plot_fb_diff = self.zeros_one_plant_in
+    
+    ## TODO: potentially create multiple layers LSTM
+    def config_lstm(self):
         ## plant variables
         self.plant_in = tf.placeholder(self.dtype, [None, self.num_steps, self.plant_input_size])
         self.plant_true = tf.placeholder(self.dtype, [None, self.num_steps, self.plant_output_size])
@@ -203,28 +228,6 @@ class LSTM_controller(object):
         self.fb_cost = tf.reduce_mean((self.fb_pred - self.setout)*(self.fb_pred - self.setout))
         # self.fb_cost = tf.reduce_mean(self.fb_pred*self.fb_pred)
         self.fb_optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.fb_cost, var_list= self.cont_var_list)
-        
-        # zero arrays 
-        self.zeros_one_plant_state = np.zeros([1, self.plant_state_size])
-        self.zeros_one_cont_state = np.zeros([1, self.cont_state_size])
-        self.zeros_batch_plant_state = np.zeros([self.batch_size, self.plant_state_size])
-        self.zeros_batch_cont_state = np.zeros([self.batch_size, self.cont_state_size])
-        self.zeros_batch_plant_in = np.zeros([self.batch_size, self.plant_input_size])
-        self.zeros_one_plant_in = np.zeros([1, self.plant_input_size])
-
-        # Initialize plant_cstate, plant_hstate, cont_cstate, cont_hstate
-        self.train_plant_cstate = self.zeros_batch_plant_state
-        self.train_plant_hstate = self.zeros_batch_plant_state
-        self.plot_plant_cstate = self.zeros_one_plant_state
-        self.plot_plant_hstate = self.zeros_one_plant_state
-        self.train_cont_cstate = self.zeros_batch_cont_state
-        self.train_cont_hstate = self.zeros_batch_cont_state
-        self.plot_cont_cstate = self.zeros_one_cont_state
-        self.plot_cont_hstate = self.zeros_one_cont_state
-        self.data_cont_cstate = self.zeros_one_cont_state
-        self.data_cont_hstate = self.zeros_one_cont_state
-        self.train_fb_diff = self.zeros_batch_plant_in
-        self.plot_fb_diff = self.zeros_one_plant_in
 
     def gen_noise(self):
         temp = np.random.normal(0, self.nF)
@@ -402,7 +405,7 @@ class LSTM_controller(object):
         plt.title('Controller cost history')
         plt.legend()      
         
-    def plot_plant_dynamics(self, noise=None, init_state=None):
+    def plot_plant_dynamics(self, noise=None, init_state=None, update_plot_state = False):
 
         if noise is None:
             curr_noise = self.gen_noise()
@@ -424,7 +427,6 @@ class LSTM_controller(object):
 
             real_resp[time,:] = resp_out
 
-        ## Same noise data for plotting plant predicted position with/without controller
         pred_resp = self.sess.run(self.plant_pred, feed_dict = {
             self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]), 
             # self.cstate_plant: self.zeros_one_plant_state, 
@@ -442,14 +444,16 @@ class LSTM_controller(object):
         plt.title('Uncontrolled plant response (Real vs Predicted)')
         plt.legend()
 
-        # get next plot plant states
-        self.plot_plant_cstate, self.plot_plant_hstate = self.sess.run(self.plant_state_tuple, feed_dict= {
-            self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
-            self.cstate_plant: self.plot_plant_cstate,
-            self.hstate_plant: self.plot_plant_hstate
-            })
+        # update next plot plant states
+        if update_plot_state:   
+            self.plot_plant_cstate, self.plot_plant_hstate = self.sess.run(self.plant_state_tuple, feed_dict= {
+                self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
+                self.cstate_plant: self.plot_plant_cstate,
+                self.hstate_plant: self.plot_plant_hstate
+                })
+        else: pass 
 
-    def plot_cont_plant_dynamics(self,noise=None, init_state=None):  
+    def plot_cont_plant_dynamics(self,noise=None, init_state=None, update_plot_state = False):  
         
         if noise is None:
             curr_noise = self.gen_noise()
@@ -505,17 +509,19 @@ class LSTM_controller(object):
         plt.title('Controlled plant response (Real vs Predicted)')
         plt.legend()
 
-        # next state values
-        self.plot_cont_cstate, self.plot_cont_hstate = curr_cstate, curr_hstate
+        # update next state values
+        if update_plot_state :
+            self.plot_cont_cstate, self.plot_cont_hstate = curr_cstate, curr_hstate
 
-        self.plot_fb_diff = self.sess.run(self.tf_state_tuple[-1], feed_dict={
-            self.fb_in:  np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
-            self.fb_diff: self.plot_fb_diff, 
-            self.cstate_plant: self.plot_plant_cstate,
-            self.hstate_plant: self.plot_plant_hstate,
-            self.cstate_cont: self.plot_cont_cstate,
-            self.hstate_cont: self.plot_cont_hstate
-            })
+            self.plot_fb_diff = self.sess.run(self.tf_state_tuple[-1], feed_dict={
+                self.fb_in:  np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
+                self.fb_diff: self.plot_fb_diff, 
+                self.cstate_plant: self.plot_plant_cstate,
+                self.hstate_plant: self.plot_plant_hstate,
+                self.cstate_cont: self.plot_cont_cstate,
+                self.hstate_cont: self.plot_cont_hstate
+                })
+        else: pass
 
     def update_cont_plant_states(self):
         ''' allow last state values be fed into next iteration,
@@ -570,17 +576,22 @@ class LSTM_controller(object):
 
     def save_trained_NN(self, filename):
         if self.check_filename(filename):
+            my_vars = [self.plant_in, self.plant_optimizer, self.plant_cost,  self.cstate_plant, self.hstate_plant, self.plant_true, self.plant_pred,
+                self.cont_pred_tuple[0], self.cont_pred_tuple[1][0], self.cont_pred_tuple[1][1], self.cont_in, self.cstate_cont,  self.hstate_cont, self.fb_optimizer, self.fb_cost, self.fb_in, self.fb_diff]
             saver = tf.train.Saver()
+            for v in my_vars:
+                tf.add_to_collection(filename+'NN_var', v)
+                saver.save(self.sess, filename+'NN_save')
             for v in self.plant_var_list:
                 tf.add_to_collection(filename+'plant_var', v)
-                saver.save(self.sess, filename+'plant_model_save')
+                saver.save(self.sess, filename+'plant_save')
             for v in self.cont_var_list:
                 tf.add_to_collection(filename+'cont_var',v)
-                saver.save(self.sess, filename+'cont_model_save')
+                saver.save(self.sess, filename+'cont_save')
         else: assert 0, 'Enter filename as a string.'
 
     def load_parameters(self, filename):
-        if self.check_filename(filename) :
+        if self.check_filename(filename):
             sim_dict = pickle.load(open(filename+'sim_dict.p','rb'))
             para_dict = pickle.load(open(filename+'para_dict.p','rb'))
             model_name, epitime, timestep, noise_magnitude = sim_dict['model_name'], sim_dict['epitime'], sim_dict['timestep'], sim_dict['noise_magnitude']
@@ -589,7 +600,7 @@ class LSTM_controller(object):
         else: assert 0, 'Enter filename as a string.'
 
     def load_data(self, filename):
-        if self.check_filename(filename) :
+        if self.check_filename(filename):
             noise_data = pickle.load(filename+'noise_data.p','rb')
             force_data = pickle.load(filename+'force_data.p','rb')
             pos_data = pickle.load(filename+'pos_data.p', 'rb')
@@ -597,11 +608,18 @@ class LSTM_controller(object):
         else: assert 0, 'Enter filename as a string.'
 
     def load_trained_NN(self, filename):
-        if self.check_filename(filename) :
-            plant_saver = tf.train.import_meta_graph(filename+'plant_model_save.meta')
-            plant_saver.restore(self.sess, filename+'plant_model_save')
+        if self.check_filename(filename):
+            saver = tf.train.import_meta_graph(filename+'NN_save.meta')
+            saver.restore(self.sess, filename+'NN_save')
+            [self.plant_in, self.plant_optimizer, self.plant_cost, self.cstate_plant, self.hstate_plant, self.plant_true, self.plant_pred,
+                self.cont_pred, self.cont_cstate, self.cont_hstate, self.cont_in, self.cstate_cont,  self.hstate_cont, self.fb_optimizer, self.fb_cost, self.fb_in, self.fb_diff]= tf.get_collection(filename+'NN_var')
+
+            self.cont_pred_tuple = self.cont_pred, (self.cont_cstate, self.cont_hstate)
+            
+            plant_saver = tf.train.import_meta_graph(filename+'plant_save.meta')
+            plant_saver.restore(self.sess, filename+'plant_save')
             self.plant_var_list = tf.get_collection(filename+'plant_var')
-            cont_saver = tf.train.import_meta_graph(filename+'cont_model_save.meta')
-            cont_saver.restore(self.sess, filename+'cont_model_save')
+            cont_saver = tf.train.import_meta_graph(filename+'cont_save.meta')
+            cont_saver.restore(self.sess, filename+'cont_save')
             self.cont_var_list = tf.get_collection(filename+'cont_var')
         else: assert 0, 'Enter filename as a string.'
