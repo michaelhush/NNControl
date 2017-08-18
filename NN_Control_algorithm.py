@@ -81,7 +81,7 @@ class FBCell(tf.contrib.rnn.LSTMCell):
 class Model(object):
     def select_model(self, name):
         if name == 'Pendulum': return Pendulum()
-        # if name == 'Quantum' : return Quantum() 
+        if name == 'Cavity_spring' : return Cavity_spring() 
         assert 0, 'Model name does not exist:' + name 
 
 class Pendulum(Model):
@@ -105,14 +105,31 @@ class Pendulum(Model):
     ## Transforming angular position to x,y coordinate
         return np.array([np.sin(real_state[0]),-np.cos(real_state[0]),real_state[1]])
 
-## TODO: add quantum simulation here, note it must have the same function name 'config_dynamics' and 'dynamics'
-# class Quantum(Model):
-#     def __init__(self):
-#         self.config_dynamics()
-#     def config_dynamics(self, ):
-#         pass
-#     def dynamics(self, ):
-#         pass
+class Cavity_spring(Model):
+    def __init__(self):
+        self.config_dynamics()
+
+    def config_dynamics(self, wc = 1.0, wm = 1.0, rc = 0.1, rm= 0.1, ks = 0.1):
+        self.wc = wc # cavity oscillator frequency  
+        self.wm = wm # mechanical oscillator frequency
+        self.rc = rc # damping rate of cavity
+        self.rm = rm # damping rate of mecahnical oscillator
+        self.ks = ks # distance affecting frequency
+
+    def dynamics(self, state, t, u):
+        # uc: control of cavitiy, assume real for now
+        # um: control of mechanical oscillator, assume real for now
+        ar, ac, br, bc = state
+        uc, um = u[0], u[1] 
+        dar = uc -self.rc * ar + (self.wc - self.ks)*br*ac 
+        dac = -self.rc*ac - (self.wc - self.ks)*br*ar 
+        dbr = um - self.rm*br + self.wm*bc 
+        dbc = -self.wm*br - self.rm*bc - self.ks *(ar*ar + ac*ac)
+        return [dar, dac, dbr, dbc]
+
+    def variables_name(self):
+        return ['real a', 'complex a', 'real b', 'complex b']
+
 
 class LSTM_controller(object):
     def __init__(self, epitime = 1, timestep = 0.1, model_name = 'Pendulum'):
@@ -235,7 +252,12 @@ class LSTM_controller(object):
         # return self.nF*np.random.randn([self.num_steps, self.plant_input_size])
     
     def gen_init_state(self):
-        return np.array([0.0, 0.0])
+        if self.model_name == 'Pendulum':
+            init_state = np.array([0.0, 0.0])
+        else: 
+            init_state = np.array([0.0 for _ in range(self.plant_output_size)])
+        
+        return init_state
         #return np.array([np.random.uniform()* 2*np.pi, np.random.normal(0, 1.0)])
     
     def initialize_variables(self):
@@ -300,25 +322,33 @@ class LSTM_controller(object):
             # curr_hstate = self.zeros_one_cont_state
             curr_cstate = self.data_cont_cstate
             curr_hstate = self.data_cont_hstate
+            
+            curr_u = [0.0 for _ in range(self.plant_input_size)]
+            cont_out = [0.0 for _ in range(self.plant_input_size)]
 
-            cont_out = 0.0
             for time in range(self.num_steps):
-                curr_u = curr_noise[time] + cont_out
+                for ind in range(self.plant_input_size):
+                    curr_u[ind] = curr_noise[time][ind] + cont_out[ind]
+
                 oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr, args=(curr_u,))
                 curr_pstate = oderes[-1,:]
+
                 if self.model_name == 'Pendulum':
                     resp_out = self.model.real_state_to_response(curr_pstate)
-                else: pass
-
-                cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+                    cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                         self.cont_in: np.reshape(resp_out, [1,1,self.cont_input_size]), 
                         self.cstate_cont: curr_cstate, 
                         self.hstate_cont: curr_hstate})
+                    curr_resp[time,:] = resp_out
+                else:
+                    cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+                            self.cont_in: np.reshape(curr_pstate, [1,1,self.cont_input_size]), 
+                            self.cstate_cont: curr_cstate, 
+                            self.hstate_cont: curr_hstate})
+                    curr_resp[time,:] = curr_pstate
 
-                cont_out = np.reshape(cont_out, [ ])
-
+                cont_out = np.reshape(cont_out, [self.plant_input_size])
                 curr_force[time,:] = curr_u
-                curr_resp[time,:] = resp_out
 
             self.add_fpn_data(curr_noise,curr_force,curr_resp)
 
@@ -423,9 +453,10 @@ class LSTM_controller(object):
             curr_pstate = oderes[-1,:]
 
             if self.model_name == 'Pendulum':
-                resp_out = self.model.real_state_to_response(curr_pstate)
-
-            real_resp[time,:] = resp_out
+                reps_out = self.model.real_state_to_response(curr_pstate)
+                real_resp[time,:] = reps_out
+            else:
+                real_resp[time,:] = curr_pstate
 
         pred_resp = self.sess.run(self.plant_pred, feed_dict = {
             self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]), 
@@ -470,21 +501,29 @@ class LSTM_controller(object):
         curr_cstate = self.plot_cont_cstate
         curr_hstate = self.plot_cont_hstate
 
-        cont_out = 0.0
+        curr_u = [0.0 for _ in range(self.plant_input_size)]
+        cont_out = [0.0 for _ in range(self.plant_input_size)]
+
         for time in range(self.num_steps):
             curr_u = curr_noise[time] + cont_out
-            oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr,args=(curr_u,))
+            oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr, args=(curr_u,))
             curr_pstate = oderes[-1,:]
             if self.model_name == 'Pendulum':
                 resp_out = self.model.real_state_to_response(curr_pstate)
-            else: pass
-            cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+                cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                     self.cont_in: np.reshape(resp_out, [1,1,self.cont_input_size]), 
                     self.cstate_cont: curr_cstate, 
                     self.hstate_cont: curr_hstate})
-            cont_out = np.reshape(cont_out, [ ])
-            real_resp[time,:] = resp_out
-        
+                real_resp[time,:] = resp_out
+            else:
+                cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+                    self.cont_in: np.reshape(curr_pstate, [1,1,self.cont_input_size]), 
+                    self.cstate_cont: curr_cstate, 
+                    self.hstate_cont: curr_hstate})
+                real_resp[time,:] = curr_pstate
+         
+            cont_out = np.reshape(cont_out, [self.plant_input_size])
+    
         ## Plot controlled signal with NN plant
         pred_resp = self.sess.run(self.fb_pred, feed_dict = {
             self.fb_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]),
@@ -526,7 +565,6 @@ class LSTM_controller(object):
     def update_cont_plant_states(self):
         ''' allow last state values be fed into next iteration,
             If not called, state values for next iteration are zeros.'''
-
         self.train_fb_diff = self.sess.run(self.tf_state_tuple[-1], feed_dict ={
             self.fb_in: self.noise_data[-self.batch_size:], 
             self.fb_diff: self.train_fb_diff,

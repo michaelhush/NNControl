@@ -10,3 +10,8 @@ NN_Control_algorithm.py:
 - Last state values are obtained by feeding the last batch data
 - Not sure about the last state values for plotting (useful if you want to see how much better controller does each iteration)
 6) Add in features for multi-layer LSTM.
+
+7) optical spring system implemented, bugs fixed so plug in model_name = 'Cavity_spring' and play straightaway.
+- Check the system of equations, hopefully I did the algebra correctly
+- Don't know what intuitive values for all parameters are.
+- Fix it to only pass one control, right now assuming access to everything
