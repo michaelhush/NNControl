@@ -109,7 +109,7 @@ class Cavity_spring(Model):
     def __init__(self):
         self.config_dynamics()
 
-    def config_dynamics(self, wc = 1.0, wm = 1.0, rc = 0.1, rm= 0.1, ks = 0.1):
+    def config_dynamics(self, wc = 2.0, wm = 1.0, rc = 0.1, rm= 0.1, ks = 0.5):
         self.wc = wc # cavity oscillator frequency  
         self.wm = wm # mechanical oscillator frequency
         self.rc = rc # damping rate of cavity
@@ -121,8 +121,8 @@ class Cavity_spring(Model):
         # um: control of mechanical oscillator, assume real for now
         ar, ac, br, bc = state
         uc, um = u[0], u[1] 
-        dar = uc -self.rc * ar + (self.wc - self.ks)*br*ac 
-        dac = -self.rc*ac - (self.wc - self.ks)*br*ar 
+        dar = uc -self.rc * ar + (self.wc - self.ks*br)*ac 
+        dac = -self.rc*ac - (self.wc - self.ks*br)*ar 
         dbr = um - self.rm*br + self.wm*bc 
         dbc = -self.wm*br - self.rm*bc - self.ks *(ar*ar + ac*ac)
         return [dar, dac, dbr, dbc]
