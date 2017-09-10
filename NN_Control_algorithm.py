@@ -1,11 +1,14 @@
 from __future__ import division
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import matplotlib.patches as patches
 import numpy as np
 import scipy.integrate as si
 import random as random
 import math
 from copy import *
 import pickle
+
 
 
 import tensorflow as tf
@@ -82,13 +85,14 @@ class Model(object):
     def select_model(self, name):
         if name == 'Pendulum': return Pendulum()
         if name == 'Cavity_spring' : return Cavity_spring() 
+        if name == 'Cartpole': return Cartpole()
         assert 0, 'Model name does not exist:' + name 
 
 class Pendulum(Model):
     def __init__(self):
         self.config_dynamics()
 
-    def config_dynamics(self, g=9.8, mu=0.1):
+    def config_dynamics(self, g=9.8, mu=0.3):
         self.g = g #pendumlem weight
         self.mu = mu #pendulem dampening
 
@@ -104,6 +108,39 @@ class Pendulum(Model):
     def real_state_to_response(self, real_state):
     ## Transforming angular position to x,y coordinate
         return np.array([np.sin(real_state[0]),-np.cos(real_state[0]),real_state[1]])
+
+    def set_up_animation(self):
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot(111, aspect = 'equal', autoscale_on = True, xlim=(-10, 10), ylim = (-2, 2))
+        self.ax.grid()
+        self.line_cont, = self.ax.plot([],[],'o-', lw = 2)
+        self.line_real, = self.ax.plot([],[],'o-', lw = 2)
+
+    def init_animation(self):
+        self.line_cont.set_data([],[])
+        self.line_real.set_data([],[])
+        return self.line_cont, self.line_real,
+
+    def get_animation_data(self, cont_data, uncont_data):
+        self.cont_data = cont_data
+        self.uncont_data = uncont_data
+
+    def animate(self,i):
+        self.line_cont.set_data([0, self.cont_data[:,0][i]], [0,self.cont_data[:,1][i]]) 
+        self.line_real.set_data([0, self.uncont_data[:,0][i]], [0, self.uncont_data[:,1][i]])
+        return self.line_cont, self.line_real,
+
+    def show_animation(self, timestep, num_frames, model_name):
+        self.set_up_animation()
+        from time import time
+        t0 = time()
+        self.animate(0)
+        t1 = time()
+        interval = 1000 * timestep - (t1 - t0)
+        ani = animation.FuncAnimation(self.fig, self.animate, frames= num_frames, 
+            interval=interval, blit=True, init_func=self.init_animation)
+        ani.save(model_name+'.mp4', fps = int(1/timestep), extra_args=['-vcodec','libx264'])
+        plt.show()
 
 class Cavity_spring(Model):
     def __init__(self):
@@ -130,6 +167,82 @@ class Cavity_spring(Model):
     def variables_name(self):
         return ['real a', 'complex a', 'real b', 'complex b']
 
+class Cartpole(Model):
+    def __init__(self):
+        self.config_dynamics()
+
+    def config_dynamics(self, mc = 0.5, mp = 0.2, muc = 0.1, l = 0.3 , i = 0.006, g = 9.8):
+        self.mc = mc # mass of cart
+        self.mp = mp # mass of pole
+        self.muc = muc # coefficient of friction for cart
+        self.l = l # length to of pendulum
+        self.i = i # inertia of pendulum
+        self.g = g 
+
+    def dynamics(self, state, t, u):
+        # u: control force applies to cart
+        # x: cart position
+        # theta: pendulum angle from vertical
+        x, x_prime, theta, theta_prime, = state
+        dx = x_prime
+        dx_prime = (1/(self.mc+self.mp))* (u -self.muc*x_prime - self.mp*self.l*(np.cos(theta)+theta_prime*theta_prime*np.sin(theta)))
+        dtheta = theta_prime
+        dtheta_prime = (1/(self.mp*self.l*self.l))*(-self.mp* self.g*self.l*np.sin(theta) - self.mp*self.l*dx_prime *np.cos(theta))
+
+        return [dx, dx_prime, dtheta, dtheta_prime] 
+
+    def variables_name(self):
+        return ['cart x', 'cart velocity', 'pole angle','pole ang velocity'  ]
+
+    def real_state_to_response(self, real_state):
+    ## Transforming angular position to x,y coordinate
+        # if -math.pi/2 <= real_state[0] <= math.pi/2:
+        #     return np.array([np.sin(real_state[0])*self.l, -np.cos(real_state[0])*self.l ,real_state[1], real_state[2], real_state[3]])
+        # else: 
+            # return np.array([np.cos(real_state[0]-math.pi/2)*self.l, np.sin(real_state[0]-math.pi/2)*self.l ,real_state[1], real_state[2], real_state[3]]) 
+        return np.array([np.sin(real_state[0])*self.l, -np.cos(real_state[0])*self.l ,real_state[1], real_state[2], real_state[3]]) 
+
+
+    def set_up_animation(self):
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot(111, aspect='equal', autoscale_on = True, xlim=(-20, 20), ylim = (-3, 3))
+        self.ax.grid()
+        self.line_cont, = self.ax.plot([],[],'o-', lw = 1)
+        self.line_real, = self.ax.plot([],[],'o-', lw = 1)
+        self.patch_cont = patches.Rectangle((-1,-0.5), 1, 0.5, fc='b')
+        self.patch_real = patches.Rectangle((-1,-0.5), 1, 0.5, fc='y')
+
+    def init_animation(self):
+        '''initialize animation'''
+        self.ax.add_patch(self.patch_cont)
+        self.ax.add_patch(self.patch_real)
+        self.line_cont.set_data([],[])
+        self.line_real.set_data([],[])
+        return self.line_cont, self.line_real, self.patch_cont, self.patch_real, 
+
+    def get_animation_data(self, cont_data, uncont_data):
+        self.cont_data = cont_data
+        self.uncont_data = uncont_data 
+
+    def animate(self,i):
+        '''perform animation step'''
+        self.line_cont.set_data([self.cont_data[:,3][i], self.cont_data[:,3][i]+self.cont_data[:,0][i]], [-0.25, self.cont_data[:,1][i]])
+        self.line_real.set_data([self.uncont_data[:,3][i], self.uncont_data[:,3][i]+self.uncont_data[:,0][i]], [-0.25, self.uncont_data[:,1][i]])
+        self.patch_cont.set_xy([self.cont_data[:,3][i]-0.5, -0.5])
+        self.patch_real.set_xy([self.uncont_data[:,3][i]-0.5, -0.5])
+        return self.line_cont, self.line_real, self.patch_cont, self.patch_real,
+
+    def show_animation(self, timestep, num_frames, model_name):
+        self.set_up_animation()
+        from time import time
+        t0 = time()
+        self.animate(0)
+        t1 = time()
+        interval = 1000 * timestep - (t1 - t0)
+        ani = animation.FuncAnimation(self.fig, self.animate, frames= num_frames, 
+            interval=interval, blit=True, init_func=self.init_animation)
+        ani.save(model_name+'.mp4', fps = int(1/timestep), extra_args=['-vcodec','libx264'])
+        plt.show()
 
 class LSTM_controller(object):
     def __init__(self, epitime = 1, timestep = 0.1, model_name = 'Pendulum'):
@@ -161,9 +274,6 @@ class LSTM_controller(object):
         self.plant_hist = [ ]
         self.cont_hist = [ ]
         
-    def config_noise(self, nF = 5):
-        self.nF = nF #magnitude of noise 
-
     def config_lstm_para(self, batch_size = 128, plant_state_size = 128, cont_state_size = 32, 
                                 input_size = 1, output_size = 3, learning_rate = 0.001, setout=None):
         self.batch_size = batch_size
@@ -181,6 +291,7 @@ class LSTM_controller(object):
         else:
             self.setout = tf.constant(setout, dtype = self.dtype)
 
+        print ('setout:{}'.format(setout))
         ## call initialize states after all dimensions are defined    
         self.initialize_states()
     
@@ -246,14 +357,24 @@ class LSTM_controller(object):
         # self.fb_cost = tf.reduce_mean(self.fb_pred*self.fb_pred)
         self.fb_optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.fb_cost, var_list= self.cont_var_list)
 
+    def config_noise(self, nF = 5, constant_noise = True):
+        self.constant_noise = constant_noise # select noise type
+        self.nF = nF #magnitude of noise 
+    
     def gen_noise(self):
-        temp = np.random.normal(0, self.nF)
-        return np.full([self.num_steps, self.plant_input_size], temp)
+        if self.constant_noise: 
+            temp = np.random.normal(0, self.nF)
+            noise = np.full([self.num_steps, self.plant_input_size], temp) ## constant noise for all timesteps
+        else:
+            noise = [np.full([self.plant_input_size], np.random.normal(0, self.nF)) for _ in range(self.num_steps)]
+        return noise 
         # return self.nF*np.random.randn([self.num_steps, self.plant_input_size])
     
     def gen_init_state(self):
         if self.model_name == 'Pendulum':
             init_state = np.array([0.0, 0.0])
+        elif self.model_name == 'Cartpole':
+            init_state = np.array([0.0, 0.0, 0.0, 0.0])
         else: 
             init_state = np.array([0.0 for _ in range(self.plant_output_size)])
         
@@ -329,10 +450,11 @@ class LSTM_controller(object):
             for time in range(self.num_steps):
                 for ind in range(self.plant_input_size):
                     curr_u[ind] = curr_noise[time][ind] + cont_out[ind]
-
+                # curr_u = curr_noise[time] + cont_out
                 oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr, args=(curr_u,))
                 curr_pstate = oderes[-1,:]
 
+                # if self.model_name == 'Pendulum' or 'Cartpole':
                 if self.model_name == 'Pendulum':
                     resp_out = self.model.real_state_to_response(curr_pstate)
                     cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
@@ -351,6 +473,7 @@ class LSTM_controller(object):
                 curr_force[time,:] = curr_u
 
             self.add_fpn_data(curr_noise,curr_force,curr_resp)
+            print (self.force_data)
 
     ## Step 2: train NN plant using measured data of real plant
     def train_plant(self, epochs = 10):
@@ -425,6 +548,7 @@ class LSTM_controller(object):
         
         print ('Final train controller cost:{}'.format(curr_cost))
 
+    '''Plotting methods'''
     def plot_plant_cost_hist(self):
         plt.plot(range(len(self.plant_hist)), self.plant_hist, '-', label = 'plant costs')
         plt.title('Plant cost history')
@@ -446,17 +570,29 @@ class LSTM_controller(object):
         else:
             curr_pstate = init_state
          
-        real_resp = np.zeros([self.num_steps, self.plant_output_size])
+        if self.model_name == 'Cartpole':
+            self.real_uncont_resp = np.zeros([self.num_steps, self.plant_output_size+1])
+            real_uncont_angle = np.zeros([self.num_steps, self.plant_output_size])
+        else:
+            self.real_uncont_resp = np.zeros([self.num_steps, self.plant_output_size])
+
+
         for time in range(self.num_steps):
             curr_u = curr_noise[time]
             oderes = si.odeint(self.model.dynamics,curr_pstate,self.t_arr,args=(curr_u,))
             curr_pstate = oderes[-1,:]
 
-            if self.model_name == 'Pendulum':
+            if self.model_name == 'Cartpole':
                 reps_out = self.model.real_state_to_response(curr_pstate)
-                real_resp[time,:] = reps_out
-            else:
-                real_resp[time,:] = curr_pstate
+                self.real_uncont_resp[time,:] = reps_out
+                real_uncont_angle[time,:] = curr_pstate
+
+            elif self.model_name == 'Pendulum':
+                reps_out = self.model.real_state_to_response(curr_pstate)
+                self.real_uncont_resp[time,:] = reps_out
+
+            else: self.real_uncont_resp[time,:] = reps_out
+
 
         pred_resp = self.sess.run(self.plant_pred, feed_dict = {
             self.plant_in: np.reshape(curr_noise, [1, self.num_steps, self.plant_input_size]), 
@@ -469,8 +605,11 @@ class LSTM_controller(object):
         
         plot_time = np.arange(0, self.epitime, self.timestep)
         for ind in range(self.plant_output_size):
-            plt.plot(plot_time, pred_resp[:,ind], '-', label = 'uncon pred ' + self.outvar_names[ind])
-            plt.plot(plot_time, real_resp[:,ind], '-', label = 'uncon real ' + self.outvar_names[ind])
+                plt.plot(plot_time, pred_resp[:,ind], '-', label = 'uncon pred ' + self.outvar_names[ind])
+                if self.model_name == 'Cartpole':
+                    plt.plot(plot_time, real_uncont_angle[:,ind], '-', label = 'uncon real ' + self.outvar_names[ind])
+                else: plt.plot(plot_time, self.real_uncont_resp[:,ind], '-', label = 'uncon real ' + self.outvar_names[ind])
+
         plt.plot(plot_time, curr_noise, '-', label = 'input noise')
         plt.title('Uncontrolled plant response (Real vs Predicted)')
         plt.legend()
@@ -495,7 +634,11 @@ class LSTM_controller(object):
         else:
             curr_pstate = init_state
         
-        real_resp = np.zeros([self.num_steps, self.plant_output_size])
+        if self.model_name == 'Cartpole':
+            self.real_resp = np.zeros([self.num_steps, self.plant_output_size+1])
+            real_resp = np.zeros([self.num_steps, self.plant_output_size])
+        else: 
+            self.real_resp = np.zeros([self.num_steps, self.plant_output_size])
         # curr_cstate = self.zeros_one_cont_state
         # curr_hstate = self.zeros_one_cont_state
         curr_cstate = self.plot_cont_cstate
@@ -508,19 +651,32 @@ class LSTM_controller(object):
             curr_u = curr_noise[time] + cont_out
             oderes = si.odeint(self.model.dynamics, curr_pstate, self.t_arr, args=(curr_u,))
             curr_pstate = oderes[-1,:]
+
+
             if self.model_name == 'Pendulum':
                 resp_out = self.model.real_state_to_response(curr_pstate)
                 cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                     self.cont_in: np.reshape(resp_out, [1,1,self.cont_input_size]), 
                     self.cstate_cont: curr_cstate, 
                     self.hstate_cont: curr_hstate})
-                real_resp[time,:] = resp_out
+                self.real_resp[time,:] = resp_out
+
+            elif self.model_name == 'Cartpole':
+                cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
+                self.cont_in: np.reshape(curr_pstate, [1,1,self.cont_input_size]), 
+                self.cstate_cont: curr_cstate, 
+                self.hstate_cont: curr_hstate})
+                real_resp[time,:] = curr_pstate
+                
+                resp_out = self.model.real_state_to_response(curr_pstate)
+                self.real_resp[time,:] = resp_out
+
             else:
                 cont_out, (curr_cstate, curr_hstate) = self.sess.run(self.cont_pred_tuple, feed_dict ={
                     self.cont_in: np.reshape(curr_pstate, [1,1,self.cont_input_size]), 
                     self.cstate_cont: curr_cstate, 
                     self.hstate_cont: curr_hstate})
-                real_resp[time,:] = curr_pstate
+                self.real_resp[time,:] = curr_pstate
          
             cont_out = np.reshape(cont_out, [self.plant_input_size])
     
@@ -543,7 +699,10 @@ class LSTM_controller(object):
         plot_time = np.arange(0, self.epitime, self.timestep)
         for ind in range(self.plant_output_size):
             plt.plot(plot_time, pred_resp[:,ind], '-', label = 'con pred ' + self.outvar_names[ind])
-            plt.plot(plot_time, real_resp[:,ind], '-', label = 'con real ' + self.outvar_names[ind])
+            if self.model_name == 'Cartpole':
+                plt.plot(plot_time, real_resp[:,ind], '-', label = 'con real ' + self.outvar_names[ind])
+            else: 
+                plt.plot(plot_time, self.real_resp[:,ind], '-', label = 'con real ' + self.outvar_names[ind])
         plt.plot(plot_time, curr_noise, '-', label = 'input noise')
         plt.title('Controlled plant response (Real vs Predicted)')
         plt.legend()
@@ -562,6 +721,12 @@ class LSTM_controller(object):
                 })
         else: pass
 
+    ''' Animation methods: must call after calling plot_cont_plant_dynamics()'''
+    def show_animation(self):
+        self.model.get_animation_data(self.real_resp, self.real_uncont_resp)
+        self.model.show_animation(self.timestep, self.num_steps, self.model_name)
+
+    ''' Saving/Loading and update '''
     def update_cont_plant_states(self):
         ''' allow last state values be fed into next iteration,
             If not called, state values for next iteration are zeros.'''
@@ -599,8 +764,9 @@ class LSTM_controller(object):
         ''' save parameters as a dictionary'''
         if self.check_filename(filename) :
             sim_dict = {'model_name':self.model_name, 'epitime': self.epitime, 'timestep': self.timestep, 'noise_magnitude': self.nF}
-            para_dict ={'set_out': self.set_out, 'plant_state_size':self.plant_state_size, 'cont_state_size': self.cont_state_size, 'learning_rate': self.learning_rate }
-            pickle.dump(sim_dict, open(filename+'sim_dict.p','wb')) # change name
+            para_dict ={'set_out': self.set_out, 'plant_state_size':self.plant_state_size, 
+            'cont_state_size': self.cont_state_size, 'learning_rate': self.learning_rate }
+            pickle.dump(sim_dict, open(filename+'sim_dict.p','wb')) 
             pickle.dump(para_dict,open(filename+'para_dict.p','wb'))
         else: assert 0, 'Enter filename as a string.'
 
@@ -615,7 +781,8 @@ class LSTM_controller(object):
     def save_trained_NN(self, filename):
         if self.check_filename(filename):
             my_vars = [self.plant_in, self.plant_optimizer, self.plant_cost,  self.cstate_plant, self.hstate_plant, self.plant_true, self.plant_pred,
-                self.cont_pred_tuple[0], self.cont_pred_tuple[1][0], self.cont_pred_tuple[1][1], self.cont_in, self.cstate_cont,  self.hstate_cont, self.fb_optimizer, self.fb_cost, self.fb_in, self.fb_diff]
+                self.cont_pred_tuple[0], self.cont_pred_tuple[1][0], self.cont_pred_tuple[1][1], self.cont_in, self.cstate_cont, 
+                 self.hstate_cont, self.fb_optimizer, self.fb_cost, self.fb_in, self.fb_diff]
             saver = tf.train.Saver()
             for v in my_vars:
                 tf.add_to_collection(filename+'NN_var', v)
@@ -650,7 +817,8 @@ class LSTM_controller(object):
             saver = tf.train.import_meta_graph(filename+'NN_save.meta')
             saver.restore(self.sess, filename+'NN_save')
             [self.plant_in, self.plant_optimizer, self.plant_cost, self.cstate_plant, self.hstate_plant, self.plant_true, self.plant_pred,
-                self.cont_pred, self.cont_cstate, self.cont_hstate, self.cont_in, self.cstate_cont,  self.hstate_cont, self.fb_optimizer, self.fb_cost, self.fb_in, self.fb_diff]= tf.get_collection(filename+'NN_var')
+                self.cont_pred, self.cont_cstate, self.cont_hstate, self.cont_in, self.cstate_cont,  self.hstate_cont, self.fb_optimizer, 
+                self.fb_cost, self.fb_in, self.fb_diff]= tf.get_collection(filename+'NN_var')
 
             self.cont_pred_tuple = self.cont_pred, (self.cont_cstate, self.cont_hstate)
             
