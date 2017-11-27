@@ -92,3 +92,7 @@ ENV/
 
 # OSX filesystem
 .DS_Store
+
+# ignore folders
+NNControl/
+saved_models/
